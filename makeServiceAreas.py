@@ -49,6 +49,8 @@ from arcpy import env
 
 
 def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPtsID, grpFld, maxCost = None, attFld = None):
+   if attFld and not maxCost:
+      raise ValueError('`maxCost` must be assigned when `attFld` is used to assign Service Area values.')
    import numpy
    arcpy.env.snapRaster = costRastLoc
    arcpy.env.cellSize = costRastLoc
@@ -66,20 +68,25 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
    grps = unique_values(accFeat, grpFld)
    # gdbct = 1 # used with multiple-gdb routine
 
-   if isinstance(attFld, str):
-      arcpy.AddField_management(accFeat, 'minutes_SA', 'FLOAT')
-      # adjust codeblock here for custom SA minutes values
-      codeblock = """def fn(score, maxcost):
-         # min = round(15 * (math.log10(score + 5)), 1) # public lands
-         min = round(30 * (math.log10(score + 1.5)), 1) # trails
-         if min > maxcost:
-            return maxcost
-         else:
-            return min"""
-      arcpy.CalculateField_management(accFeat, 'minutes_SA', 'fn(!' + attFld + '!,' + str(maxCost) + ')', 'PYTHON', codeblock)
+   if maxCost:
+      mcb = True
+      if isinstance(attFld, str):
+         arcpy.AddField_management(accFeat, 'minutes_SA', 'FLOAT')
+         # adjust codeblock here for custom SA minutes values
+         codeblock = """def fn(score, maxcost):
+            # min = round(15 * (math.log10(score + 5)), 1) # public lands
+            min = round(30 * (math.log10(score + 1.5)), 1) # trails
+            if min > maxcost:
+               return maxcost
+            else:
+               return min"""
+         arcpy.CalculateField_management(accFeat, 'minutes_SA', 'fn(!' + attFld + '!,' + str(maxCost) + ')', 'PYTHON', codeblock)
+      else:
+         arcpy.AddField_management(accFeat, 'minutes_SA', 'FLOAT')
+         arcpy.CalculateField_management(accFeat, 'minutes_SA', maxCost, 'PYTHON')
    else:
-      arcpy.AddField_management(accFeat, 'minutes_SA', 'FLOAT')
-      arcpy.CalculateField_management(accFeat, 'minutes_SA', maxCost, 'PYTHON')
+      print('No maximum cost assigned. Will calculate cost to the full extent of `costRastLoc`.')
+      mcb = False
 
    # loop over access feature groups
    for i in grps:
@@ -110,14 +117,15 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
       arcpy.CopyFeatures_management(tmpGrp, cdfts)
 
       # get service area in minutes
-      maxCost = round(unique_values(cdfts, 'minutes_SA')[0], 1)
-      buffd = str(int(maxCost * 1900)) + ' METERS'
-
-      print('Cost in minutes: ' + str(maxCost))
-
-      arcpy.Buffer_analysis(cdfts, "buffpts", buffd)
-      arcpy.env.extent = "buffpts"
-
+      if mcb:
+         maxCost = round(unique_values(cdfts, 'minutes_SA')[0], 1)
+         print('Cost in minutes: ' + str(maxCost))
+         buffd = str(int(maxCost * 1900)) + ' METERS'
+         arcpy.Buffer_analysis(cdfts, "buffpts", buffd)
+         arcpy.env.extent = "buffpts"
+      else:
+         maxCost = None
+         arcpy.env.extent = costRastLoc
       print("# of access features: " + arcpy.GetCount_management(cdfts)[0])
 
       # local CD
@@ -203,7 +211,7 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
             # select ramps to use
             arcpy.SelectLayerByAttribute_management(rp1s, "NEW_SELECTION", '"' + rampPtsID + '"' + " IN ('" + "','".join(rls) + "')")
             if len(rls) > 0:
-               print(str(len(rls)) + ' new ramp points to process...')
+               print(str(len(rls)) + ' ramp points to process...')
             else:
                print('Finished with cost distance.')
 
@@ -251,21 +259,6 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
 
 
 def main():
-
-   # Set up variables
-   costRastLoc = r'L:\David\projects\vulnerability_model\cost_surfaces\cost_surfaces_2016.gdb\local_cost'
-   costRastHwy = r'L:\David\projects\vulnerability_model\cost_surfaces\cost_surfaces_2016.gdb\lah_cost'
-   rampPts = r'L:\David\projects\vulnerability_model\cost_surfaces\cost_surfaces_2016.gdb\rmpt_final'
-   rampPtsID = 'UniqueID'  # unique ramp segment ID attribute field, since some ramps have multiple points
-
-   # time to closest facility (all points considered at once). Returns actual cost distance in minutes.
-   accFeat = r'L:\David\projects\vulnerability_model\vulnmod.gdb\uac10_2010_test1'
-   outGDB = r'L:\David\projects\vulnerability_model\cost_distance\test.gdb'
-   grpFld = 'cdGroup'
-   maxCost = 60 # in minutes
-   attFld = None  # will return actual cost distance
-
-   #################################
    # Set up variables
    costRastLoc = r'E:\RCL_cost_surfaces\Tiger_2018\cost_surfaces.gdb\costSurf_no_lah'
    costRastHwy = r'E:\RCL_cost_surfaces\Tiger_2018\cost_surfaces.gdb\costSurf_only_lah'
