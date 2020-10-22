@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Created: 2018
-Last Updated: 2019-09-27
-ArcGIS version: ArcGIS Pro
-Python version: Python 3.5.3
+Last Updated: 2020-10-22
+ArcGIS version: ArcGIS Pro 2.6
+Python version: Python 3.6.6
 Author: David Bucklin
 
 Collection of helper functions used by
@@ -13,11 +13,12 @@ functions in this repository.
 import numpy
 import pandas as pd
 import arcpy
-arcpy.CheckOutExtension("Spatial")
-from arcpy.sa import *
 import os
 import time
 import re
+arcpy.CheckOutExtension("Spatial")
+from arcpy.sa import *
+
 
 
 def unique_values(table, field):
