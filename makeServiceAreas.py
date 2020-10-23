@@ -3,7 +3,7 @@
 makeServiceAreas
 
 Created: 2018-07
-Last Updated: 2020-10-22
+Last Updated: 2020-10-23
 ArcGIS version: ArcGIS Pro 2.6
 Python version: Python 3.6.6
 Author: David Bucklin
@@ -33,6 +33,7 @@ attFld: Optional. A score value to apply to the service area raster. Can be:
       3. None (empty). The original cost distance raster is returned (value = the cost distance).
 """
 
+import sys
 from Helper import *
 
 
@@ -61,6 +62,8 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
          arcpy.CalculateField_management(accFeat, 'minutes_SA', '!' + maxCost + '!', field_type="FLOAT")
       else:
          arcpy.CalculateField_management(accFeat, 'minutes_SA', maxCost, 'PYTHON', field_type="FLOAT")
+      # dictionary: grps: minutes
+      grp_min = {a[0]: a[1] for a in arcpy.da.SearchCursor(accFeat, [grpFld, 'minutes_SA'])}
 
    for i in grps:
       n = grps.index(i) + 1
@@ -86,7 +89,7 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
 
       # get service area in minutes
       if maxCost is not None:
-         grpMaxCost = round(unique_values(cdpts, 'minutes_SA')[0], 1)
+         grpMaxCost = grp_min[i]
          buffd = str(int(grpMaxCost * 1750)) + ' METERS'  # buffer set to straightline distance at ~65 mph
          print('Cost in minutes: ' + str(grpMaxCost))
          arcpy.Buffer_analysis(cdpts, "buffpts", buffd)
@@ -125,21 +128,33 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
 
             # highway CD
             cd2 = arcpy.sa.CostDistance("rp1s", costRastHwy, grpMaxCost, source_start_cost="RASTERVALU")
-
             c += 1
             nm = "cd" + str(c)
             cd2.save(nm)
             cds = cds + [nm]
 
             rp2 = arcpy.sa.ExtractValuesToPoints(rampPts, cd2, "rp2", "NONE", "VALUE_ONLY")
-            rp2s = arcpy.MakeFeatureLayer_management(rp2, where_clause="RASTERVALU IS NOT NULL")
-            arcpy.CalculateField_management(rp2s, "costLAH", "!RASTERVALU!", field_type="DOUBLE")
-            arcpy.CopyFeatures_management(rp2s, "rp2s")
+            # change name to avoid confusion with local ramp points
+            arcpy.AlterField_management(rp2, "RASTERVALU", "costLAH", clear_field_alias=True)
+            rp2s = arcpy.MakeFeatureLayer_management(rp2, where_clause="costLAH IS NOT NULL")
+
+            # Check for new ramps or ramps reached at least one minute faster after latest run (LAH)
+            notin = []
+            lahr = {a[0]: a[1] for a in arcpy.da.SearchCursor(rp2s, [rampPtsID, 'costLAH'])}
+            locr = {a[0]: a[1] for a in arcpy.da.SearchCursor('rp1s', [rampPtsID, 'RASTERVALU'])}
+            for a in lahr:
+               if a not in locr:
+                  notin.append(a)
+               else:
+                  if lahr[a] - locr[a] < -1:
+                     notin.append(a)
+            if len(notin) == 0:
+               print('No new ramps reached after LAH, moving on...')
+               break
 
             # back to local
-            cd3 = arcpy.sa.CostDistance("rp2s", costRastLoc, grpMaxCost, source_start_cost="RASTERVALU")
-
-            # write raster
+            arcpy.CopyFeatures_management(rp2s, "rp2s")
+            cd3 = arcpy.sa.CostDistance("rp2s", costRastLoc, grpMaxCost, source_start_cost="costLAH")
             c += 1
             nm = "cd" + str(c)
             cd3.save(nm)
@@ -147,23 +162,19 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
 
             rp1 = arcpy.sa.ExtractValuesToPoints(rampPts, cd3, "rp1", "NONE", "VALUE_ONLY")
             rp1s = arcpy.MakeFeatureLayer_management(rp1, where_clause="RASTERVALU IS NOT NULL")
-            arcpy.CalculateField_management(rp1s, "costLoc", "!RASTERVALU!", field_type="DOUBLE")
 
-            # join two ramp datasets together
-            arcpy.JoinField_management(rp1s, rampPtsID, "rp2s", rampPtsID, ["costLAH"])
-
-            # calculate time difference
-            arcpy.CalculateField_management(rp1s, "diff", '!costLoc! - !costLAH!', 'PYTHON', field_type="DOUBLE")
-            # if this value is < 0, then this resulted in a faster route to that point. Should be kept for next run.
-            sc1s = arcpy.da.SearchCursor(rp1s, [rampPtsID, "diff"])
-
-            # Add new ramps (None) or ramps with at least 1 minute faster route after local run.
-            # This will lead to another LAH/local loop, starting from rp1s.
-            # DO NOT use notin to select points, though.
+            # Check for new ramps or ramps reached at least one minute faster after latest run (Local)
+            # Similar to process earlier, but with names reversed
             notin = []
-            for r in sc1s:
-               if r[1] is None or r[1] < -1:
-                  notin.append(r[0])
+            locr = {a[0]: a[1] for a in arcpy.da.SearchCursor(rp1s, [rampPtsID, 'RASTERVALU'])}
+            lahr = {a[0]: a[1] for a in arcpy.da.SearchCursor('rp2s', [rampPtsID, 'costLAH'])}
+            for a in locr:
+               if a not in lahr:
+                  notin.append(a)
+               else:
+                  if locr[a] - lahr[a] < -1:
+                     notin.append(a)
+            # end while loop
 
          if attFld is not None:
             if isinstance(attFld, str):
@@ -182,7 +193,7 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
       print('That took ' + str(int(t1 - t0)) + ' seconds.')
 
       # garbage pickup every 10 runs, last run
-      if n == round(n, -1) or n == str(len(grps)):
+      if n == round(n, -1) or n == len(grps):
          print("Deleting files...")
          r = arcpy.ListRasters("cd*")
          fc = arcpy.ListFeatureClasses("rp*")
@@ -195,31 +206,25 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
 
    return
 
-## end
 
+# General usage
 
-def main():
-
-   # Environment settings
-   arcpy.env.parallelProcessingFactor = "100%"  # Adjust to some percent (e.g. 100%) for large extent analyses (e.g. maxCost = None)
-   arcpy.env.mask = r'L:\David\projects\RCL_processing\RCL_processing.gdb\VA_Buff50mi_wgs84'
-   arcpy.env.overwriteOutput = True
-
-   # Cost surface variables
-   costRastLoc = r'E:\RCL_cost_surfaces\Tiger_2019\cost_surfaces.gdb\costSurf_no_lah'
-   costRastHwy = r'E:\RCL_cost_surfaces\Tiger_2019\cost_surfaces.gdb\costSurf_only_lah'
-   rampPts = r'E:\RCL_cost_surfaces\Tiger_2019\cost_surfaces.gdb\rmpt_final'
-   rampPtsID = 'UniqueID'  # unique ramp segment ID attribute field, since some ramps have multiple points
-
-   # Facilities features and settings
-   accFeat = r'accessFeatures'
-   outGDB = r'serviceAreas.gdb'
-   # Attributes
-   grpFld = 'facil_code'
-   maxCost = 30
-   attFld = None
-   makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPtsID, grpFld, maxCost, attFld)
-
-
-if __name__ == '__main__':
-   main()
+# # Environment settings
+# arcpy.env.parallelProcessingFactor = "100%"  # Adjust to some percent (e.g. 100%) for large extent analyses (e.g. maxCost = None)
+# arcpy.env.mask = r'L:\David\projects\RCL_processing\RCL_processing.gdb\VA_Buff50mi_wgs84'
+# arcpy.env.overwriteOutput = True
+#
+# # Cost surface variables
+# costRastLoc = r'E:\RCL_cost_surfaces\Tiger_2019\cost_surfaces.gdb\costSurf_no_lah'
+# costRastHwy = r'E:\RCL_cost_surfaces\Tiger_2019\cost_surfaces.gdb\costSurf_only_lah'
+# rampPts = r'E:\RCL_cost_surfaces\Tiger_2019\cost_surfaces.gdb\rmpt_final'
+# rampPtsID = 'UniqueID'  # unique ramp segment ID attribute field, since some ramps have multiple points
+#
+# # Facilities features and settings
+# accFeat = r'accessFeatures'
+# outGDB = r'serviceAreas.gdb'
+# # Attributes
+# grpFld = 'facil_code'
+# maxCost = 30
+# attFld = None
+# makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPtsID, grpFld, maxCost, attFld)

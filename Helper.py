@@ -10,15 +10,11 @@ Collection of helper functions used by
 functions in this repository.
 """
 
-import numpy
-import pandas as pd
 import arcpy
 import os
 import time
 import re
 arcpy.CheckOutExtension("Spatial")
-from arcpy.sa import *
-
 
 
 def unique_values(table, field):
@@ -62,38 +58,3 @@ def garbagePickup(trashList):
       except:
          pass
    return
-
-
-def valToScoreNeg(inRast, minimum, maximum):
-   """Given an input value raster, applies a negative function so that the model score at or
-   below the minimum value is 100, with scores decreasing to 0 at the maximum value and beyond."""
-   rast = Con(inRast <= minimum, 100, Con(inRast > maximum, 0, 100 * (maximum - inRast) / (maximum - minimum)))
-   return rast
-
-
-def arcgis_table_to_df(in_fc, query=""):
-   """Function will convert an ArcGIS table into a pandas dataframe with an object ID index, and the selected
-   input fields using an arcpy.da.SearchCursor."""
-   input_fields = [x.name for x in arcpy.ListFields(in_fc)]
-   OIDFieldName = arcpy.Describe(in_fc).OIDFieldName
-   input_fields.remove(OIDFieldName)
-   final_fields = [OIDFieldName] + input_fields
-   data = [row for row in arcpy.da.SearchCursor(in_fc, final_fields, where_clause=query)]
-   fc_dataframe = pd.DataFrame(data, columns=final_fields)
-   fc_dataframe = fc_dataframe.set_index(OIDFieldName, drop=True)
-   return fc_dataframe
-
-
-def df_to_arcgis_table(df, table):
-   if os.path.dirname(table) == '':
-      dirname = arcpy.env.workspace
-   else:
-      dirname = os.path.dirname(table)
-      table = os.path.basename(table)
-   out = dirname + os.sep + table
-   x = np.array(np.rec.fromrecords(df.values))
-   names = df.dtypes.index.tolist()
-   x.dtype.names = tuple(names)
-   if arcpy.env.overwriteOutput and arcpy.Exists(out):
-      arcpy.Delete_management(table)
-   arcpy.da.NumPyArrayToTable(x, out)
