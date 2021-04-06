@@ -22,7 +22,7 @@ rampPts: A point feature class defining connection points between
    local and limited access roads.
 rampPtsID: a unique id corresponding to a given ramp/connection
 grpFld: The grouping attribute field name for accFeat, where one cost distance is
-   run for each group
+   run for each group. Default (None) is to treat all features as one group.
 maxCost: the maximum cost distance allowed. Can be:
       1. a string indicating the column in 'accFeat' which contains the numeric values to use as maximum costs.
       2. a numeric value indicating the maximum cost to apply to all service areas
@@ -34,14 +34,66 @@ attFld: Optional. A score value to apply to the service area raster. Can be:
 """
 
 import sys
-from Helper import *
+import arcpy
+import os
+import time
+import re
+arcpy.CheckOutExtension("Spatial")
 
 
-def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPtsID, grpFld, maxCost=None, attFld=None):
+def unique_values(table, field):
+   """ Gets list of unique values in a field.
+   Thanks, ArcPy Cafe! https://arcpy.wordpress.com/2012/02/01/create-a-list-of-unique-field-values/"""
+   with arcpy.da.SearchCursor(table, [field]) as cursor:
+      return sorted({row[0] for row in cursor})
 
-   if attFld and not maxCost:
-      print('Must specify a `maxCost` value if using `attFld`, exiting...')
-      return
+
+def make_gdb(path):
+   """ Creates a geodatabase if it doesn't exist"""
+   path = path.replace("\\", "/")
+   if '.gdb' not in path:
+      print("Bad geodatabase path name.")
+      return False
+   folder = path[0:path.rindex("/")]
+   name = path[(path.rindex("/") + 1):len(path)]
+   if not os.path.exists(path):
+      try:
+         arcpy.CreateFileGDB_management(folder, name)
+      except:
+         return False
+      else:
+         print("Geodatabase '" + path + "' created.")
+         return True
+   else:
+      return True
+
+
+def make_gdb_name(string):
+   """Makes strings GDB-compliant"""
+   nm = re.sub('[^A-Za-z0-9]+', '_', string)
+   return nm
+
+
+def garbagePickup(trashList):
+   """Deletes Arc files in list, with error handling. Argument must be a list."""
+   for t in trashList:
+      try:
+         arcpy.Delete_management(t)
+      except:
+         pass
+   return
+
+
+def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPtsID, grpFld=None, maxCost=None, attFld=None):
+
+   # Checks on attFld
+   if attFld:
+      if not maxCost:
+         print('Must specify a `maxCost` value if using `attFld`, exiting...')
+         return
+      if isinstance(attFld, str) and not [attFld in [a.name for a in arcpy.ListFields(accFeat)]]:
+         print('Field ' + attFld + ' not found in access features, exiting...')
+         return
 
    arcpy.env.snapRaster = costRastLoc
    arcpy.env.cellSize = costRastLoc
@@ -54,6 +106,10 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
 
    # copy access points to gdb
    accFeat = arcpy.CopyFeatures_management(accFeat, 'accFeat_orig')
+   if not grpFld:
+      # add a field to assign all rows to one group.
+      grpFld = 'serviceArea_group'
+      arcpy.CalculateField_management(accFeat, grpFld, "1", field_type="SHORT")
    grps = unique_values(accFeat, grpFld)
 
    # assign max costs
@@ -80,7 +136,7 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
          continue
 
       print("working on group " + str(i) + " (" + str(n) + " of " + str(len(grps)) + ")...")
-      arcpy.env.extent = costRastLoc  # so points don't get excluded due to previous extent setting
+      arcpy.env.extent = costRastLoc  # reset extent prior to every run
       t0 = time.time()
       c = 1  # counter
 
@@ -90,10 +146,11 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
       # get service area in minutes
       if maxCost is not None:
          grpMaxCost = grp_min[i]
-         buffd = str(int(grpMaxCost * 1750)) + ' METERS'  # buffer set to straightline distance at ~65 mph
+         # Make buffer to set a smaller extent, to reduce processing time.
+         buffd = str(int(grpMaxCost * 1609)) + ' METERS'  # buffer set to straightline distance at ~60 mph (1 mile per minute)
          print('Cost in minutes: ' + str(grpMaxCost))
-         arcpy.Buffer_analysis(cdpts, "buffpts", buffd)
-         arcpy.env.extent = "buffpts"
+         arcpy.Buffer_analysis(cdpts, "buffext", buffd)
+         arcpy.env.extent = "buffext"
       else:
          grpMaxCost = None
 
@@ -179,7 +236,7 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
          if attFld is not None:
             if isinstance(attFld, str):
                # cell statistics
-               areaval = unique_values(cdpts, attFld)[0]
+               areaval = round(unique_values(cdpts, attFld)[0], 3)
                area = arcpy.sa.Con(arcpy.sa.CellStatistics(cds, "MINIMUM", "DATA"), areaval, "", "Value <= " + str(grpMaxCost))
                area.save(rastout)
             elif isinstance(attFld, int):
@@ -197,14 +254,15 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
          print("Deleting files...")
          r = arcpy.ListRasters("cd*")
          fc = arcpy.ListFeatureClasses("rp*")
-         fc.append("buffpts")
+         fc.append("buffext")
          garbagePickup(r)
          garbagePickup(fc)
 
    # reset extent
    arcpy.env.extent = costRastLoc
 
-   return
+   arcpy.BuildPyramids_management(rastout)
+   return rastout
 
 
 # General usage
