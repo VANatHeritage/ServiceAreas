@@ -283,7 +283,10 @@ def makeServiceAreas(outGDB, accFeat, costRastLoc, costRastHwy, rampPts, rampPts
       print('That took ' + str(int(t1 - t0)) + ' seconds.')
 
    # delete processing geodatabase
-   arcpy.Delete_management(pgdb)
+   try:
+      arcpy.Delete_management(pgdb)
+   except:
+      print('Could not delete processing gdb.')
    # reset extent
    arcpy.env.extent = costRastLoc
 
